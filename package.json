@@ -1,7 +1,7 @@
 {
   "name": "deletemy.day",
   "productName": "deletemy.day",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "An AI assistant that can help you delegate your daily tasks!",
   "main": ".vite/build/main.js",
   "scripts": {
@@ -9,7 +9,8 @@
     "package": "electron-forge package",
     "make": "electron-forge make",
     "publish": "electron-forge publish",
-    "lint": "eslint --ext .ts,.tsx ."
+    "lint": "eslint --ext .ts,.tsx .",
+    "raw:package": "electron-packager . DelegateMy.Day --overwrite --platform=darwin --arch=arm64 --icon=assets/icon.icns --prune=true --out=out"
   },
   "keywords": [],
   "author": {
@@ -30,6 +31,7 @@
     "@typescript-eslint/eslint-plugin": "^5.62.0",
     "@typescript-eslint/parser": "^5.62.0",
     "electron": "35.0.0",
+    "electron-packager": "^17.1.2",
     "eslint": "^8.57.1",
     "eslint-plugin-import": "^2.31.0",
     "ts-node": "^10.9.2",
@@ -40,7 +42,7 @@
     "@ai-sdk/anthropic": "^1.1.13",
     "@modelcontextprotocol/sdk": "^1.6.1",
     "@nut-tree-fork/libnut-darwin": "^2.7.4",
-    "@nut-tree/nut-js": "^3.1.2",
+    "@nut-tree-fork/nut-js": "^4.2.4",
     "@picovoice/pvrecorder-node": "^1.2.6",
     "ai": "^4.1.47",
     "better-sqlite3": "^11.8.1",
@@ -52,6 +54,7 @@
     "sharp": "0.32.6",
     "speaker": "^0.5.5",
     "sqlite-vec": "0.1.7-alpha.2",
+    "uuid": "^11.1.0",
     "wav-decoder": "^1.3.0",
     "wavefile": "^11.0.0",
     "yaml": "^2.7.0",

@@ -1,14 +1,17 @@
-import { app, BrowserWindow, globalShortcut, ipcMain } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, Menu, Tray } from 'electron';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { setupConfig } from './config';
 import { run } from './mcp';
-import { capture, recordAudio, setRecording } from './worker';
+import { capture, handleTask, recordAudio, setRecording } from './worker';
+import { setupDb } from "./storage";
+import { v4 } from 'uuid';
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null
+
 let toggle = false;
 
-// Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
   app.quit();
 }
@@ -16,11 +19,12 @@ if (started) {
 type Payload = {
   source: string;
   event: string;
-  data: any;
+  data: unknown;
 }
 
 const createWindow = async () => {
   setupConfig();
+  setupDb();
 
   console.log('[main] MCP starting...');
   await run();
@@ -37,7 +41,12 @@ const createWindow = async () => {
     switch (payload.event) {
       case 'start':
         console.log('[main] Starting recording...');
-        await capture(true, (action: string, data: any) => {
+
+        mainWindow?.minimize();
+
+        tray?.setImage('assets/rec-16.png');
+
+        await capture(true, (action: string, data: unknown) => {
           console.log('[main] capture cb with', { action, data });
 
           mainWindow?.webContents.send(
@@ -45,6 +54,48 @@ const createWindow = async () => {
             { source: 'main', action, data }
           )
         });
+
+        tray?.setImage('assets/icon-no-bg-16.png');
+
+        if (mainWindow?.isMinimized()) {
+          mainWindow?.restore();
+        }
+
+        break;
+
+      case 'start-text':
+        console.log('[main] Starting task from text...');
+
+        mainWindow?.webContents.send(
+          'test',
+          {
+            source: 'main',
+            action: 'transcription',
+            data: {
+              id: v4(),
+              date: new Date(),
+              type: 'text',
+              role: 'user',
+              data: payload.data,
+            }
+          }
+        )
+
+        mainWindow?.minimize();
+
+        await handleTask(payload.data as string, (action: string, data: unknown) => {
+          console.log('[main] handleTask cb with', { action, data });
+
+          mainWindow?.webContents.send(
+            'test',
+            { source: 'main', action, data }
+          )
+        });
+
+        if (mainWindow?.isMinimized()) {
+          mainWindow?.restore();
+        }
+
         break;
     }
   });
@@ -52,9 +103,13 @@ const createWindow = async () => {
   globalShortcut.register('Command+Shift+L', async () => {
     console.log('[main] Command+Shift+L pressed');
 
+    tray?.setImage('assets/rec-16.png');
+
+    mainWindow?.minimize();
+
     await capture(
       true,
-      (action: string, data: any) => {
+      (action: string, data: unknown) => {
         console.log('[main] capture cb with', { action, data });
 
         mainWindow?.webContents.send(
@@ -63,6 +118,12 @@ const createWindow = async () => {
         )
       },
     )
+
+    if (mainWindow?.isMinimized()) {
+      mainWindow?.restore();
+    }
+
+    tray?.setImage('assets/icon-no-bg-16.png');
   });
 
   globalShortcut.register('Command+Shift+T', async () => {
@@ -72,6 +133,8 @@ const createWindow = async () => {
 
       setRecording(toggle);
 
+      mainWindow?.minimize();
+
       // Wait for a second
       await new Promise((resolve) => {
         setTimeout(() => {
@@ -79,7 +142,7 @@ const createWindow = async () => {
         }, 1000);
       });
 
-      await capture(false, (action: string, data: any) => {
+      await capture(false, (action: string, data: unknown) => {
         console.log('[main] capture from toggle cb with', { action, data });
 
         mainWindow?.webContents.send(
@@ -87,16 +150,24 @@ const createWindow = async () => {
           { source: 'main', action, data }
         )
       });
+
+      if (mainWindow?.isMinimized()) {
+        mainWindow?.restore();
+      }
+
+      tray?.setImage('assets/icon-no-bg-16.png');
     } else {
       console.log('[main] Command+Shift+T pressed, starting');
       toggle = true;
+
+      tray?.setImage('assets/rec-16.png');
 
       setRecording(toggle);
 
       // Start recording
       await recordAudio(
         undefined,
-        (action: string, data: any) => {
+        (action: string, data: unknown) => {
           console.log('[main] recordAudio from toggle cb with', { action, data });
 
           mainWindow?.webContents.send(
@@ -110,7 +181,7 @@ const createWindow = async () => {
 
   // Create the browser window.
   mainWindow = new BrowserWindow({
-    width: 800,
+    width: 600,
     height: 600,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -125,32 +196,30 @@ const createWindow = async () => {
   }
 
   mainWindow.show();
-
-  // Open the DevTools.
-  // mainWindow.webContents.openDevTools();
 };
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
-app.on('ready', createWindow);
+const createTray = () => {
+  tray = new Tray('assets/icon-no-bg-16.png');
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
+  const contextMenu = Menu.buildFromTemplate([]);
+
+  tray.setToolTip('Delegate My Day');
+  tray.setContextMenu(contextMenu)
+}
+
+const onReady = async () => {
+  try {
+    createTray();
+    await createWindow();
+  } catch (e) {
+    console.error(`[main] Error in onReady: ${e.message}`);
+  }
+}
+
+app.on('ready', onReady);
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
 });
-
-// app.on('activate', () => {
-//   // On OS X it's common to re-create a window in the app when the
-//   // dock icon is clicked and there are no other windows open.
-//   if (BrowserWindow.getAllWindows().length === 0) {
-//     createWindow();
-//   }
-// });
-
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and import them here.

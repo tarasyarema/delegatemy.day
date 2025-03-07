@@ -1,4 +1,4 @@
-import { Key, screen, FileType, keyboard, mouse, Point, Region, Button } from "@nut-tree/nut-js";
+import { Key, screen, FileType, keyboard, mouse, Point, Region, Button, sleep, clipboard } from "@nut-tree-fork/nut-js";
 import { createAnthropic } from "@ai-sdk/anthropic"
 import fs from "fs";
 import { z } from 'zod';
@@ -9,22 +9,16 @@ import Speaker from 'speaker';
 import { getInstalledApps } from 'get-installed-apps'
 import { exec } from 'child_process';
 import say from 'say';
-import Database from "better-sqlite3";
-import * as sqliteVec from "sqlite-vec";
-import { CONFIG_TMP_PATH, CONFIG_DB_PATH, getConfig } from "./config";
+import { CONFIG_TMP_PATH, getConfig } from "./config";
+import { getDb } from "./storage";
+import { desktopCapturer } from "electron";
+import { v4 } from "uuid";
 
 const config = getConfig();
 
-const db = new Database(CONFIG_DB_PATH);
-sqliteVec.load(db);
-
-const { sqlite_version, vec_version } = db
-  .prepare(
-    "select sqlite_version() as sqlite_version, vec_version() as vec_version;",
-  )
-  .get();
-
-console.log(`[mcp] SQLite version: ${sqlite_version}, SQLite-vec version: ${vec_version}`);
+const openai = new OpenAI({
+  apiKey: config.keys.openai.apiKey,
+});
 
 keyboard.config.autoDelayMs = 40;
 
@@ -35,9 +29,8 @@ screen.config.highlightDurationMs = 2_000;
 mouse.config.mouseSpeed = 10;
 mouse.config.autoDelayMs = 10;
 
-const openai = new OpenAI({
-  apiKey: config.keys.openai.apiKey,
-});
+const PAGE_SCROLL_AMOUNT = 100;
+
 
 function capitalizeFirstLetter(val: string) {
   return String(val).charAt(0).toUpperCase() + String(val).slice(1);
@@ -168,43 +161,83 @@ export const run = async () => {
   const width = await screen.width();
   const height = await screen.height();
 
-  const factor = 2;
+  const factor = 1.5;
 
-  const newWidth = width / factor;
-  const newHeight = height / factor;
+  const newWidth = Math.round(width / factor);
+  const newHeight = Math.round(height / factor);
 
   const takeScreenshot = async () => {
-    try {
-      const resp = await screen.capture(
-        "out.png",
-        FileType.PNG,
-        CONFIG_TMP_PATH,
-      );
+    let bs: Buffer;
 
-      console.log(`[debug] Took screenshot: ${resp}`);
-    } catch (e) {
-      console.error(`[debug] Could not take screenshot`, e);
-      return;
-    }
+    if (false) {
+      console.log(`[debug] Taking screenshot with desktopCapturer`);
 
-    const bs = fs.readFileSync(`${CONFIG_TMP_PATH}/out.png`);
+      const s = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: {
+          width: width * factor,
+          height: height * factor,
+        },
+      })
 
-    try {
-      await (
-        sharp(bs).png({
-          quality: 100,
-          compressionLevel: 6,
-        }).resize(newWidth, newHeight)
-      ).toFile(`${CONFIG_TMP_PATH}/out-small.png`);
-    } catch (e) {
-      console.error(`Could not resize image`, e);
+      bs = s[0].thumbnail.toPNG();
+
+      // Store the screenshot
+      await sharp(bs).png({
+        quality: 100,
+        compressionLevel: 6,
+      }).resize(newWidth, newHeight).toFile(`${CONFIG_TMP_PATH}/out-small.png`);
+    } else {
+      console.log(`[debug] Taking screenshot with nut-js`);
+
+      try {
+        const resp = await screen.capture(
+          "out.png",
+          FileType.PNG,
+          CONFIG_TMP_PATH,
+        );
+
+        console.log(`[debug] Took screenshot: ${resp}`);
+      } catch (e) {
+        console.error(`[debug] Could not take screenshot`, e);
+        return;
+      }
+
+      bs = fs.readFileSync(`${CONFIG_TMP_PATH}/out.png`);
+
+      try {
+        await (
+          sharp(bs).png({
+            quality: 100,
+            compressionLevel: 6,
+          }).resize(newWidth, newHeight)
+        ).toFile(`${CONFIG_TMP_PATH}/out-small.png`);
+      } catch (e) {
+        console.error(`Could not resize image`, e);
+      }
     }
   }
 
   // const { tools } = await client.listTools();
-  const tools: any[] = [];
+  // const tools: any[] = [];
 
-  console.log(`Using screenshot resolution: ${width}x${height}`);
+  console.log(`Using screenshot resolution: ${width}x${height} with scaled resolution: ${newWidth}x${newHeight}`);
+
+  const pointFromCoordinate = (coordinate: number[]) => {
+    return new Point(
+      Math.round(coordinate[0] * factor),
+      Math.round(coordinate[1] * factor),
+    );
+  }
+
+  const regionFromPoint = (point: Point) => {
+    return new Region(
+      point.x - 10,
+      point.y - 10,
+      20,
+      20,
+    );
+  };
 
   const defaultTools = {
     computer: anthropic.tools.computer_20241022({
@@ -237,27 +270,21 @@ export const run = async () => {
                 return 'No coordinate provided for a mouse move action';
               }
 
-              const x = coordinate[0] * factor;
-              const y = coordinate[1] * factor;
+              const point = pointFromCoordinate(coordinate);
+              const region = regionFromPoint(point);
 
-              await mouse.setPosition(new Point(x, y));
+              await mouse.setPosition(point);
+              await screen.highlight(region);
 
-              await screen.highlight(
-                new Region(x - 10, y - 10, 20, 20),
-              )
-
-              return `Sure, I moved the mouse to (${x}, ${y})`;
+              return `Sure, I moved the mouse to (${point.x}, ${point.y})`;
             }
             case "double_click": {
               if (coordinate) {
-                const x = coordinate[0] * factor;
-                const y = coordinate[1] * factor;
+                const point = pointFromCoordinate(coordinate);
+                const region = regionFromPoint(point);
 
-                await mouse.setPosition(new Point(x, y));
-
-                await screen.highlight(
-                  new Region(x - 10, y - 10, 20, 20),
-                )
+                await mouse.setPosition(point);
+                await screen.highlight(region);
               }
 
               await mouse.leftClick();
@@ -267,14 +294,11 @@ export const run = async () => {
             }
             case "left_click": {
               if (coordinate) {
-                const x = coordinate[0] * factor;
-                const y = coordinate[1] * factor;
+                const point = pointFromCoordinate(coordinate);
+                const region = regionFromPoint(point);
 
-                await mouse.setPosition(new Point(x, y));
-
-                await screen.highlight(
-                  new Region(x - 10, y - 10, 20, 20),
-                )
+                await mouse.setPosition(point);
+                await screen.highlight(region);
               }
 
               await mouse.leftClick();
@@ -298,10 +322,10 @@ export const run = async () => {
               }
 
               const curr = await mouse.getPosition();
-              const to = new Point(coordinate[0], coordinate[1]);
+              const to = pointFromCoordinate(coordinate);
               await mouse.drag([curr, to]);
 
-              return `Sure, I dragged the mouse to (${coordinate[0]}, ${coordinate[1]})`;
+              return `Sure, I dragged the mouse to ({${to.toString()}})`;
             }
             case 'type': {
               if (!text) {
@@ -326,10 +350,20 @@ export const run = async () => {
 
               // Special case
               if (text === 'Page_Down') {
-                await mouse.scrollDown(10);
+                console.log(`[debug] Scrolling down ${PAGE_SCROLL_AMOUNT} times`);
+
+                // await mouse.scrollDown(PAGE_SCROLL_AMOUNT);
+
+                // Inverted
+                await mouse.scrollUp(PAGE_SCROLL_AMOUNT);
+
                 return 'Sure, I pressed the Page Down key';
               } else if (text === 'Page_Up') {
-                await mouse.scrollUp(10);
+                console.log(`[debug] Scrolling up ${PAGE_SCROLL_AMOUNT} times`);
+
+                // Inverted
+                await mouse.scrollDown(PAGE_SCROLL_AMOUNT);
+
                 return 'Sure, I pressed the Page Up key';
               }
 
@@ -373,6 +407,34 @@ export const run = async () => {
         return `Sure, I spoke the text: "${text}"`;
       }
     }),
+    sleep: tool({
+      description: "A tool that sleeps for the specified amount of time, given in milliseconds",
+      parameters: z.object({
+        ms: z.number().describe("The amount of time to sleep in milliseconds")
+      }),
+      execute: async ({ ms }) => {
+        await sleep(ms);
+        return `Sure, I slept for ${ms} milliseconds`;
+      }
+    }),
+    getClipboard: tool({
+      description: "A tool that gets the current clipboard content",
+      parameters: z.object({}),
+      execute: async () => {
+        const content = await clipboard.getContent();
+        return `The clipboard content is: "${content}"`;
+      }
+    }),
+    setClipboard: tool({
+      description: "A tool that sets the clipboard content",
+      parameters: z.object({
+        content: z.string().describe("The content to set in the clipboard")
+      }),
+      execute: async ({ content }) => {
+        await clipboard.setContent(content);
+        return `Sure, I set the clipboard content to: "${content}"`;
+      }
+    }),
     apps: tool({
       description: "A tool that lists the installed apps",
       parameters: z.object({}),
@@ -399,6 +461,85 @@ export const run = async () => {
         }
 
         return `Sure, I opened the app: "${appName}"`;
+      }
+    }),
+    fetchContext: tool({
+      description: "A tool that fetches context from the database",
+      parameters: z.object({
+        prompt: z.string().describe("The prompt to fetch context for"),
+      }),
+      execute: async ({ prompt }) => {
+        const resp = await openai.embeddings.create({
+          model: "text-embedding-3-small",
+          input: prompt,
+          encoding_format: "float",
+        });
+
+        const embedding = resp.data?.[0]?.embedding;
+
+        if (!embedding) {
+          console.warn(`[mcp] Could not fetch context for prompt: "${prompt}"`);
+          return 'Could not fetch context';
+        }
+
+        console.log(`[mcp] Fetching context for prompt: "${prompt}"`);
+
+        try {
+          const ctx = getDb().prepare(
+            `SELECT context, categories FROM context WHERE vector MATCH ? ORDER BY distance LIMIT 1`
+          ).get(
+            new Float32Array(embedding)
+          )
+
+          let text = ''
+
+          if (ctx?.categories) {
+            text += `Categories: ${ctx.categories.split('<>').join(', ')}\n`;
+          }
+
+          text += `Context: ${ctx?.context ?? 'No context found'}`;
+
+          return text;
+        } catch (e) {
+          console.error(`[mcp] Could not fetch context for prompt: "${prompt}"`, e);
+          return 'Could not fetch context due to an internal error';
+        }
+      }
+    }),
+    storeContext: tool({
+      description: "A tool that let's you store context for future use",
+      parameters: z.object({
+        context: z.string().describe("The context to store"),
+        categories: z.array(z.string()).describe("The categories for the context")
+      }),
+      execute: async ({ context, categories }) => {
+        const resp = await openai.embeddings.create({
+          model: "text-embedding-3-small",
+          input: `Categories: ${categories.join(' ')}\n${context}`,
+          encoding_format: "float",
+        });
+
+        const embedding = resp.data?.[0]?.embedding;
+
+        if (!embedding) {
+          console.warn(`[mcp] Could not store context for context: "${context}"`);
+          return 'Could not store context';
+        }
+
+        console.log(`[mcp] Storing context for context: "${context}"`);
+
+        const stmt = getDb().prepare(
+          `INSERT INTO context (creation_date, context, categories, vector) VALUES (?, ?, ?, ?)`
+        );
+
+        try {
+          stmt.run(new Date().toISOString(), context, categories.join('<>'), new Float32Array(embedding));
+          console.log(`[mcp] Inserted context with embedding with length: ${embedding.length}`);
+        } catch (e) {
+          console.error(`[mcp] Could not insert context with embedding`, e);
+        }
+
+        return 'Sure, I stored the context';
       }
     }),
   }
@@ -434,64 +575,98 @@ let prevText = "";
 const system = `
 ## Context
 
-Your goal is to help the user with their computer tasks. Make sure to follow their instructions and provide helpful responses. 
+As an AI assistant, your primary role is to help the user manage computer-related tasks efficiently. Use the tools provided to execute commands accurately, always ensuring user instructions are followed closely. 
 
-Also, you need to make sure that any additional information is passed to the tools to make the life easier, e.g. passing the 
-coordinates of the mouse click to the computer tool.
+### Tools and Usage
 
-Use the previous conversations to provide context and help the user with their tasks, so for example if the user asks for a follow-up
-check if the previous conversations contain any relevant information that can be used to help the user.
+- **Computer Control**: Directly manipulate system functions like mouse clicks or keyboard input.
+- **Speak**: Provide verbal feedback or ask for clarifications.
+- **Sleep**: Pause execution for a specified duration, can be used as a polling mechanism. Only use when necessary, or if you want to wait after a specific tool call, use small times like 500ms.
+- **See Available Apps**: Review available applications, so you can open them as needed.
+- **Open App**: Launch applications as directed.
+- **Control Clipboard**: Manage clipboard contents for copy-paste operations.
+- **Context Management**: Retrieve or store important user information to maintain continuity across tasks.
 
-## Remarks
+### Personal preferences
 
-- Today is ${new Date().toDateString()}.
-- If you see the "Delegate My Day" app open, make sure to minimize it before doing any other action, as it might interfere with the user's tasks.
-- The default browser used is "Brave Browser" (you will be able to see it in the available apps), and before opening a new one check if there's a browser already open.
-- Make sure to open a new tab in the browser if you are asked to search for something, so that the user can continue using the current tab.
-- Generally, when the user asks to check something / send message / etc. you might want to check if there's a specific app for that action, if not use the default browser and check if there's a tab that can be used. Examples of this could be "Send a Whatsapp" or "Check my email".
-- The user might ask for transcribing / dictating text, use the appropriate tool for that.
-- Avoid using Alt+Tab to switch between windows, as it might not work as expected. Instead use either clicks or the installed apps tool to switch between apps.
-- When you are gonna do a "sensitive" action, make sure to speak it before, to make the user aware of what you are going to do.
-- When you move the mouse, make sure to move it to the CORRECT POSITION, specially in the MIDDLE OF THE ELEMENT that you are looking at. Always take into account the resolution of the screen.
-- Before clicking or typing, make sure to move the mouse to the correct position, and the element is in focus!
-- When asked for scrolling, make sure to use the scroll tool with the correct amount and direction.
-- Avoid using "Page Up" or "Page Down" keys, as they might not work as expected. Instead use the scroll tool with the correct amount and direction.
-- If clicking do not work, make sure to get a screenshot and use the cursor position tool to re-localize the mouse.
-- If you are unsure about the action that the user is asking, stop immediately and ask for clarification before proceeding. So that the user can provide timely feedback.
-- Sometimes the tabs in the browser might not be visible, make sure to check if there's a tab that can be used before opening a new one. You can use the top bar to switch between tabs.
-- In the end of each conversation, make sure to speak any follow-up questions or actions that the user might need to know.
-- When working with sheets, sometimes you might need to use the keyboard to navigate between cells, make sure to use the correct keys for that. In those cases generally you need to double click on the cell to edit it. And then to move to the next cell you can use the "Tab" key. Also, to go out of the cell you can use the "Enter" key.
-- Be brief and concise in your intermediate responses, and make sure to provide the user with the necessary information to proceed. This will help make the whole process more efficient and faster.
-- If you need some additional information to perform the requested action, make sure to ask the user for it. For example, if you need the name of the app to open, ask the user for it. Once you have all the necessary information, proceed with the action, and do as much as you can to help the user without asking for more information again.
+- My default browser is "Brave Browser".
 
-## Shortcuts / workflows
+### Guidelines
 
-Here's a list of pre-defined shortcuts and workflows that you can use to help the user with their tasks:
+- **Date Reference**: Be aware of today's date as ${new Date().toDateString()}.
+- **Navigational Commands**: Prefer mouse clicks and direct application access over keyboard shortcuts like Alt+Tab. Always confirm the correct screen position and element focus before action.
+- **Sensitive Actions**: Verbally confirm actions that could significantly impact system state or user data.
+- **Error Handling**: Stop and seek clarification if instructions are unclear or if an action fails, providing feedback on the issue.
 
-### Use WhatsApp
+### Pre-defined Workflows
 
-1. Open the browser
-2. Check for an existing WhatsApp tab, if not open it at https://web.whatsapp.com/
-3. Do the user requested action or ask the user for more information
+#### Check wheater forecast
 
-### Slack unreads
+If the location is not provided, check in the context for the location. If the location is not found, ask the user for the location.
 
-1. Open the Slack app
-2. Check for the "Unreads" text in bold in the top left corner
-3. Click in the middle of the screen
-4. Scroll down using the "scroll" tool until you see all the unread messages
+1. Open to the user default browser application. Make sure it's open before proceeding;
+2. Open a new tab at "tiempo.es", and wait for the page to load;
+3. Check for the search bar and add the user provided location, but do not click enter;
+4. There will be a dropdown with the location, click on it;
+5. Scroll down a bit to see the weather forecast for the next days;
+6. Speak the weather forecast for today;
+7. Ask the user if they want to know the weather for the next days.
 
-## Previous Conversations
+#### Draft email reply
 
-Use the context below coming from past conversations to help the user with their tasks.
+The use will have an email open (probably in the browser) and your task is to draft a reply to the email.
+
+1. Check the context for the email recipient, subject, and content. You can see that using a screenshot;
+2. Draft a first email with the provided content;
+3. Ask the user if they want to add or change anything in the email;
+
+### Operational Tips
+
+- When you want to open an app, make sure to check if the app is available in the system.
+- Maintain brevity and precision in communication to streamline interactions.
+- For tasks like email or message checking, use the specific apps designated for those functions, ensuring that you do not disrupt ongoing user activities.
+- When handling spreadsheets or documents, use appropriate navigation and editing shortcuts.
+- Avoid using the top bar in MacOS unless necessary (e.g. if you want to check the open tabs in the browser it makes sense to use it), as it can disrupt the user's workflow.
+- Use the sleep tool wisely, generally you would want to check immidiately if you can continue with the next task, but if you are waiting for a specific event, you can use the sleep tool to wait for it.
+- If you are unsure about the context of the user or the user prompt is unclear, you can use the fetchContext tool to get the context for the prompt, before asking for clarification.
+- When succesfully getting info from the context, make sure to let the user know verbally what you found. Only stop the execution if the context is not found or if it's still unclear.
+- In the browser, after opening a new tab, generally you would want to press <kbd>Ctrl</kbd>+<kbd>L</kbd> to focus the address bar, and then type the URL. Make sure to press <kbd>Enter</kbd> after typing the URL.
+
+## Use Past Context
+
+Draw from stored contexts to better understand user preferences and history, applying this knowledge to enhance task execution.
 
 `
 
-export const stream = async (prompt: string, cb: (text: string) => void) => {
-  prevText += `--------------\nNew conversation started with prompt at ${new Date().toISOString()} with prompt: "${prompt}"\n***\n`;
+export const stream = async (prompt: string, cb: (args: unknown) => void) => {
+  const reqId = v4();
+  const date = new Date();
+
+  const response = await openai.embeddings.create({
+    model: "text-embedding-3-small",
+    input: prompt,
+    encoding_format: "float",
+  });
+
+  const embedding = response.data?.[0]?.embedding;
+
+  if (embedding) {
+    const stmt = getDb().prepare(
+      `INSERT INTO prompts (creation_date, prompt, vector) VALUES (?, ?, ?)`
+    );
+
+    try {
+      stmt.run(new Date().toISOString(), prompt, new Float32Array(embedding));
+      console.log(`[mcp] Inserted prompt with embedding with length: ${embedding.length}`);
+    } catch (e) {
+      console.error(`[mcp] Could not insert prompt with embedding`, e);
+    }
+  }
+
+  prevText += `--------------\nNew conversation started at ${new Date().toISOString()} with user prompt: "${prompt}"\n***\n`;
 
   const newSystem = `${system}\n\n${prevText}`;
-  console.log(`[mcp] Starting stream with system\n\n${newSystem}\n\n`);
+  console.log(`[mcp] Starting stream with system of length ${newSystem.length} characters...`);
 
   const res = streamText({
     // model: anthropic("claude-3-7-sonnet-latest"),
@@ -504,10 +679,61 @@ export const stream = async (prompt: string, cb: (text: string) => void) => {
 
   console.log(`[mcp] Starting stream for prompt: "${prompt}"`);
 
-  for await (const text of res.textStream) {
-    prevText += text;
+  for await (const delta of res.fullStream) {
+    console.log(`[mcp] Delta: `, delta.type);
 
-    cb(text);
+    if (delta.type === "text-delta") {
+      prevText += delta.textDelta;
+
+      cb({
+        id: reqId,
+        date,
+        role: "system",
+        type: "text",
+        data: delta.textDelta,
+      });
+    } else if (delta.type === "tool-call-delta") {
+      cb({
+        id: reqId,
+        date,
+        role: "system",
+        type: "tool-call",
+        data: delta.toolName + " with " + delta.argsTextDelta,
+        meta: delta,
+      });
+    } else if (delta.type as string === "tool-call") {
+      const toolName = (delta as any).toolName as string;
+      const args = (delta as any).args as Record<string, any>;
+
+      let text = "";
+
+      if (toolName === "computer") {
+        text += `Computer action: ${args.action}`;
+      } else if (toolName === "fetchContext") {
+        text += `Fetching context...`;
+      } else if (toolName === "storeContext") {
+        text += `Storing context...`;
+      } else if (toolName === "speak") {
+        text += `Speaking...`;
+      } else if (toolName === "sleep") {
+        text += `Sleeping for ${args.ms}ms...`;
+      }
+
+      if (text.length > 0) {
+        text = ` [${text}] `;
+      }
+
+      prevText += ` ${text} `;
+
+      cb({
+        id: reqId,
+        date,
+        role: "system",
+        type: "tool-call",
+        data: text,
+        meta: delta,
+      });
+    }
   }
 
   prevText += `***\n`;

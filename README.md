@@ -1,5 +1,14 @@
 # Delegate My Day
 
+> As if Cursor knew more than coding!
+
+## Download
+
+- Latest version: `v0.1.2`.
+- Stage: `Alpha`, anything can change.
+
+Pre-build binaries are not available yet, but you can clone the repo and run it locally, see the [Develop](#develop) section.
+
 ## Develop
 
 ### Pre-requisites
@@ -8,8 +17,6 @@ You will need API keys for
 
 - OpenAI
 - Anthropic
-
-and also a license of [`nutjs`](https://nutjs.dev/), which then you can follow [this guide]() to configure.
 
 Once you have this, you can create a folder in `~/.dmd` and add a `config.yaml` with the following info
 
@@ -34,3 +41,13 @@ npm start
 
 it might ask you to grant permissions to the app, just follow the instructions. After that you
 might need to restart the terminal / app.
+
+## Contributing
+
+This project is in really early stages, so all contributions are welcome.
+
+For more details see [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+## License
+
+Delegate My Day is licensed under the AGPL-3.0 License, see [LICENSE](./LICENSE) for more information.

@@ -4,6 +4,9 @@ import fs from "fs";
 import OpenAI from "openai";
 import { speakNative, stream } from './mcp';
 import { CONFIG_TMP_PATH, getConfig } from "./config";
+import { v4 } from 'uuid';
+
+type Callback = (action: string, data: unknown) => void;
 
 const config = getConfig();
 
@@ -14,20 +17,20 @@ const openai = new OpenAI({
 const outputWavPath = `${CONFIG_TMP_PATH}/output.wav`;
 
 let firstTime = true;
-let recording = false;
+export let recording = false;
 
 export const setRecording = (value: boolean) => {
   recording = value;
 }
 
-export const recordAudio = async (limit?: number, cb?: any) => {
+export const recordAudio = async (limit?: number, cb?: Callback) => {
   cb('recording', null);
 
   // Clean the file
   fs.rm(outputWavPath, { force: true }, () => { console.log(`[worker] Cleaned up ${outputWavPath}`) });
 
   const wav = new WaveFile();
-  let frames: any = [];
+  const frames: Int16Array[] = [];
 
   const frameLength = 1024;
   const recorder = new PvRecorder(frameLength);
@@ -66,7 +69,7 @@ export const recordAudio = async (limit?: number, cb?: any) => {
   cb('recording-done', null);
 }
 
-export const capture = async (shouldRecord: boolean, cb?: any) => {
+export const capture = async (shouldRecord: boolean, cb?: Callback) => {
   if (recording) {
     console.log("[worker] Already recording, skipping...");
     return;
@@ -91,22 +94,37 @@ export const capture = async (shouldRecord: boolean, cb?: any) => {
 
   console.log("[worker] Recording done after waiting 1s, waiting for transcriptions...");
 
-  const res = await openai.audio.transcriptions.create({
+  const transcription = await openai.audio.transcriptions.create({
     file: fs.createReadStream(outputWavPath),
     response_format: "text",
     language: "en",
     model: "whisper-1",
   })
 
-  console.log(`[worker] Transcription`, { res });
+  console.log(`[worker] Transcription: ${transcription}`);
 
+  cb(
+    'transcription',
+    {
+      id: v4(),
+      date: new Date(),
+      type: 'text',
+      role: 'user',
+      data: transcription,
+    }
+  )
+
+  await handleTask(transcription, cb);
+
+  console.log("[worker] Stopping...");
+}
+
+export const handleTask = async (prompt: string, cb?: Callback) => {
   await stream(
-    res,
+    prompt,
     (data) => {
       cb('transcription', data);
     }
   );
-
-  console.log("[worker] Stopping...");
 }
 
