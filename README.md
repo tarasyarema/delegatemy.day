@@ -2,6 +2,8 @@
 
 > As if Cursor knew more than coding!
 
+https://github.com/user-attachments/assets/36ca4ff5-74a7-4c49-b558-0dca11d305df
+
 ## Download
 
 - Latest version: `v0.1.2`.
